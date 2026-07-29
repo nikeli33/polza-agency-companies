@@ -1,0 +1,121 @@
+# =============================================================================
+# Deploy — Polza Agency Portal (portal.nexusbots.ru)
+# Триггер: push в master
+# Шаги: build Docker → push в GHCR → деплой на сервер через SSH
+# =============================================================================
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  # Имя образа = GHCR + владелец репозитория + название репозитория
+  # Например: ghcr.io/nickmontenegro/polza-portal:latest
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Чекаут кода ──────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Логин в GitHub Container Registry ─────────────────────────────────
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      # 3. Build и push образа ───────────────────────────────────────────────
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./next-app/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      # 4. Очистка сервера от мусора предыдущих запусков ─────────────────────
+      # ВАЖНО: НЕ трогаем volume базы (down -v удалял бы все данные companies
+      # при каждом деплое) — только пересобираем db/ (init.sql идемпотентен).
+      - name: Clean server — stale files
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          script: |
+            rm -rf ~/polza-portal/db
+            echo "Stale db/ cleaned"
+
+      # 5. Копирование docker-compose файлов + db/ на сервер ────────────────
+      - name: Copy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          source: "docker-compose.yml,docker-compose.prod.yml,db/"
+          target: "~/polza-portal"
+          strip_components: 0
+
+      # 6. Деплой на сервере ─────────────────────────────────────────────────
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          APP_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          envs: APP_IMAGE
+          script: |
+            set -e
+
+            cd ~/polza-portal
+
+            # Гарантируем наличие .env с учётными данными Postgres — не трогая
+            # уже существующие строки (в т.ч. рабочий DATABASE_URL с прошлых деплоев)
+            touch .env
+            grep -q '^POSTGRES_USER=' .env || echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> .env
+            grep -q '^POSTGRES_PASSWORD=' .env || echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> .env
+            grep -q '^DATABASE_URL=' .env || echo "DATABASE_URL=postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@polza-postgres:5432/companies" >> .env
+
+            # Экспортируем переменные из .env
+            export $(grep -v '^#' .env | xargs)
+
+            # Пулим свежий образ app
+            APP_IMAGE=$APP_IMAGE \
+            docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.prod.yml \
+              pull app
+
+            # Принудительно освобождаем порт 3000 (старый контейнер может быть из другого стека)
+            docker rm -f polza-portal-app-1 2>/dev/null || true
+            docker rm -f $(docker ps -q --filter "publish=3000") 2>/dev/null || true
+
+            # Запускаем стек заново
+            APP_IMAGE=$APP_IMAGE \
+            docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.prod.yml \
+              up -d
+
+            # Чистим старые образы
+            docker image prune -f
+
+            echo "Deploy complete: portal.nexusbots.ru"

@@ -1,0 +1,28 @@
+# Build context = repo root (see next-app/Dockerfile). Keep this lean —
+# only what COPY actually needs: next-app/, scripts/, data_pack/.
+
+**/node_modules
+**/.next
+**/.git
+.git
+
+next-app/.env
+next-app/.env.*
+!next-app/.env.example
+
+*.log
+*.tsbuildinfo
+
+# Тестовое задание — исходники клиента, не часть образа
+TZ/
+
+# Персональные настройки AI-агентов
+.agents/
+.claude/
+.mimocode/
+.opencode/
+mimocode.json
+mimocode_broken.json
+skills-lock.json
+
+next-app/public/public.lnk

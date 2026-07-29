@@ -1,0 +1,30 @@
+# =============================================================================
+# Production override — добавляет сервис app (Next.js) к PostgreSQL
+# Подключается к Traefik сети для маршрутизации portal.nexusbots.ru
+# Используется вместе с docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# =============================================================================
+
+services:
+  app:
+    image: ${APP_IMAGE:-ghcr.io/nikeli33/polza-agency-companies:latest}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - default
+      - n8n-project_traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.polza.rule=Host(`portal.nexusbots.ru`)"
+      - "traefik.http.routers.polza.entrypoints=websecure"
+      - "traefik.http.routers.polza.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.polza.loadbalancer.server.port=3000"
+
+networks:
+  n8n-project_traefik:
+    external: true

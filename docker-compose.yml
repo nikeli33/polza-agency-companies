@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: companies-db
+    environment:
+      POSTGRES_DB: companies
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Укажи POSTGRES_PASSWORD в .env (см. .env.example)}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-user} -d companies"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # Уникальный алиас, чтобы "postgres" не пересекался с одноимёнными
+    # сервисами других проектов на общей внешней сети (n8n-project_traefik)
+    networks:
+      default:
+        aliases:
+          - polza-postgres
+
+volumes:
+  pgdata:
